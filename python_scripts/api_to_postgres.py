@@ -3,12 +3,27 @@ import requests
 import dotenv
 from datetime import date
 import pandas as pd
+import psycopg2
 
 
 dotenv.load_dotenv()
 
 API_KEY = os.environ.get("API_KEY")
 CONTENT_ENDPOINT = "https://content.guardianapis.com/search"
+POSTGRES_HOST = os.environ.get("POSTGRES_HOST")
+POSTGRES_PORT = os.environ.get("POSTGRES_PORT")
+POSTGRES_DATABASE = os.environ.get("POSTGRES_DATABASE")
+POSTGRES_USER = os.environ.get("POSTGRES_USER")
+POSTGRES_PASSWORD = os.environ.get("POSTGRES_PASSWORD")
+
+conn = psycopg2.connect(
+    host=POSTGRES_HOST,
+    database=POSTGRES_DATABASE,
+    user=POSTGRES_USER,
+    password=POSTGRES_PASSWORD,
+    port=POSTGRES_PORT,
+)
+cur = conn.cursor()
 
 
 def extract_publications_from_api(page=1):
@@ -87,7 +102,6 @@ def transform_pillar_to_model(df_publications):
 
 def transform_clean_publications(df_publications):
     df_publications = df_publications.drop("isHosted", axis=1)
-    print(df_publications.info())
     df_publications.columns = [
         "id",
         "type",
@@ -101,6 +115,63 @@ def transform_clean_publications(df_publications):
     return df_publications
 
 
+def load_create_tables():
+    # Sections
+    cur.execute(
+        """
+    CREATE TABLE IF NOT EXISTS sections(
+        id CHAR PRIMARY KEY,
+        title CHAR
+    );"""
+    )
+
+    # Pillars
+    cur.execute(
+        """
+    CREATE TABLE IF NOT EXISTS pillars(
+        id CHAR PRIMARY KEY,
+        title CHAR
+    );"""
+    )
+    # Keywords
+    cur.execute(
+        """
+    CREATE TABLE IF NOT EXISTS keywords(
+        id CHAR PRIMARY KEY,
+        section_id CHAR REFERENCES sections(id),
+        title CHAR
+    );"""
+    )
+
+    # Publications
+
+    cur.execute(
+        """
+    CREATE TABLE IF NOT EXISTS publications(
+        id CHAR PRIMARY KEY,
+        type CHAR,
+        section_id CHAR REFERENCES sections(id),
+        publication_date TIMESTAMP,
+        title CHAR,
+        web_url CHAR,
+        api_url CHAR,
+        pillar_id CHAR REFERENCES pillars(id)
+    );
+        """
+    )
+
+    # Tags
+
+    cur.execute(
+        """
+    CREATE TABLE IF NOT EXISTS tags(
+        publication_id CHAR REFERENCES publications(id),
+        keyword_id CHAR REFERENCES publications(id),
+        PRIMARY KEY(publication_id, keyword_id)
+    );"""
+    )
+
+
 def etl():
     df = extract_publications_from_api()
     df_publications, df_tags, df_keywords = transform_tags_to_model(df)
@@ -108,4 +179,11 @@ def etl():
     df_publications, df_pillars = transform_pillar_to_model(df_publications)
     df_publications = transform_clean_publications(df_publications)
 
+    load_create_tables()
+    conn.commit()
+
     return (df_publications, df_tags, df_keywords, df_sections, df_pillars)
+
+
+if __name__ == "__main__":
+    df_publications, df_tags, df_keywords, df_sections, df_pillars = etl()
