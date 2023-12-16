@@ -66,7 +66,8 @@ def transform_tags_to_model(df):
 
     publication_id = df_tags["id"].reset_index(drop=True)
     df_keywords = pd.json_normalize(df_tags["tags"])
-    df_keywords = df_keywords[["id", "sectionId", "webTitle"]]
+
+    df_keywords = df_keywords[["id", "sectionId", "sectionName", "webTitle"]]
 
     # Association publication - keyword
     df_tags = pd.concat([publication_id, df_keywords["id"]], axis=1)
@@ -75,19 +76,26 @@ def transform_tags_to_model(df):
 
     # Keywords metadata
     df_keywords = df_keywords.drop_duplicates("id").reset_index(drop=True)
-    df_keywords.columns = ["id", "section_id", "title"]
+    df_keywords.columns = ["id", "sectionId", "sectionName", "title"]
 
     return (df_publications, df_tags, df_keywords)
 
 
-def transform_section_to_model(df_publications):
+def transform_section_to_model(df_publications, df_keywords):
     df_sections = df_publications[["sectionId", "sectionName"]]
+    keyword_sections = df_keywords[["sectionId", "sectionName"]]
+
+    df_sections = pd.concat([df_sections, keyword_sections], ignore_index=True)
+
+    df_keywords = df_keywords.drop(["sectionName"], axis=1)
+    df_keywords.columns = ["id", "section_id", "title"]
+
     df_sections = df_sections.drop_duplicates("sectionId")
     df_sections.columns = ["id", "title"]
 
     df_publications = df_publications.drop("sectionName", axis=1)
 
-    return (df_publications, df_sections)
+    return (df_publications, df_sections, df_keywords)
 
 
 def transform_pillar_to_model(df_publications):
@@ -112,6 +120,7 @@ def transform_clean_publications(df_publications):
         "api_url",
         "pillar_id",
     ]
+
     return df_publications
 
 
@@ -120,8 +129,8 @@ def load_create_tables():
     cur.execute(
         """
     CREATE TABLE IF NOT EXISTS sections(
-        id CHAR PRIMARY KEY,
-        title CHAR
+        id VARCHAR(255) PRIMARY KEY,
+        title VARCHAR(255)
     );"""
     )
 
@@ -129,17 +138,17 @@ def load_create_tables():
     cur.execute(
         """
     CREATE TABLE IF NOT EXISTS pillars(
-        id CHAR PRIMARY KEY,
-        title CHAR
+        id VARCHAR(255) PRIMARY KEY,
+        title VARCHAR(255)
     );"""
     )
     # Keywords
     cur.execute(
         """
     CREATE TABLE IF NOT EXISTS keywords(
-        id CHAR PRIMARY KEY,
-        section_id CHAR REFERENCES sections(id),
-        title CHAR
+        id VARCHAR(255) PRIMARY KEY,
+        section_id VARCHAR(255) REFERENCES sections(id),
+        title VARCHAR(255)
     );"""
     )
 
@@ -148,14 +157,14 @@ def load_create_tables():
     cur.execute(
         """
     CREATE TABLE IF NOT EXISTS publications(
-        id CHAR PRIMARY KEY,
-        type CHAR,
-        section_id CHAR REFERENCES sections(id),
+        id VARCHAR(255) PRIMARY KEY,
+        type VARCHAR(255),
+        section_id VARCHAR(255) REFERENCES sections(id),
         publication_date TIMESTAMP,
-        title CHAR,
-        web_url CHAR,
-        api_url CHAR,
-        pillar_id CHAR REFERENCES pillars(id)
+        title VARCHAR(255),
+        web_url VARCHAR(255),
+        api_url VARCHAR(255),
+        pillar_id VARCHAR(255) REFERENCES pillars(id)
     );
         """
     )
@@ -165,21 +174,84 @@ def load_create_tables():
     cur.execute(
         """
     CREATE TABLE IF NOT EXISTS tags(
-        publication_id CHAR REFERENCES publications(id),
-        keyword_id CHAR REFERENCES publications(id),
+        publication_id VARCHAR(255) REFERENCES publications(id),
+        keyword_id VARCHAR(255) REFERENCES keywords(id),
         PRIMARY KEY(publication_id, keyword_id)
     );"""
     )
 
 
+def load_sections(df_sections):
+    for _, row in df_sections.iterrows():
+        cur.execute(
+            """INSERT INTO sections(id, title) VALUES (%s, %s)
+            ON CONFLICT DO NOTHING""",
+            (row.iloc[0], row.iloc[1]),
+        )
+
+
+def load_pillars(df_pillars):
+    for _, row in df_pillars.iterrows():
+        cur.execute(
+            """INSERT INTO pillars(id, title) VALUES (%s, %s)
+            ON CONFLICT DO NOTHING""",
+            (row.iloc[0], row.iloc[1]),
+        )
+
+
+def load_keywords(df_keywords):
+    for _, row in df_keywords.iterrows():
+        cur.execute(
+            """INSERT INTO keywords(id, section_id, title) VALUES (%s, %s, %s)
+            ON CONFLICT DO NOTHING""",
+            (row.iloc[0], row.iloc[1], row.iloc[2]),
+        )
+
+
+def load_publications(df_publications):
+    for _, row in df_publications.iterrows():
+        cur.execute(
+            """INSERT INTO publications(id, type, section_id, publication_date,
+            title, web_url, api_url, pillar_id) VALUES
+            (%s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
+            (
+                row.iloc[0],
+                row.iloc[1],
+                row.iloc[2],
+                row.iloc[3],
+                row.iloc[4],
+                row.iloc[5],
+                row.iloc[6],
+                row.iloc[7],
+            ),
+        )
+
+
+def load_tags(df_tags):
+    for _, row in df_tags.iterrows():
+        cur.execute(
+            """INSERT INTO tags(publication_id, keyword_id) VALUES
+            (%s, %s) ON CONFLICT DO NOTHING""",
+            (row.iloc[0], row.iloc[1]),
+        )
+
+
 def etl():
     df = extract_publications_from_api()
     df_publications, df_tags, df_keywords = transform_tags_to_model(df)
-    df_publications, df_sections = transform_section_to_model(df_publications)
+    df_publications, df_sections, df_keywords = transform_section_to_model(
+        df_publications, df_keywords
+    )
     df_publications, df_pillars = transform_pillar_to_model(df_publications)
     df_publications = transform_clean_publications(df_publications)
 
     load_create_tables()
+    load_sections(df_sections)
+    load_pillars(df_pillars)
+    load_keywords(df_keywords)
+    load_publications(df_publications)
+    load_tags(df_tags)
+
     conn.commit()
 
     return (df_publications, df_tags, df_keywords, df_sections, df_pillars)
